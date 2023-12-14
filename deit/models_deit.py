@@ -179,7 +179,7 @@ class CFVisionTransformer(nn.Module):
         """
         return self.important_index
 
-    def forward(self, xx, train=False, thresholds=[0.8, 0.5]): # thresholds should be descending
+    def forward(self, xx, train=True, thresholds=[0.8, 0.5]): # thresholds should be descending
         if train:
             # let each level run on each sample (thus full no_exit indicies)
             # and collect all results for learning
@@ -214,7 +214,7 @@ class CFVisionTransformer(nn.Module):
             all_results.append(coarse_result)
 
             for level in range(1, len(self.img_size_list)):
-                no_exit[level] = torch.ones_like(coarse_result) # full indicies
+                no_exit[level] = torch.ones(size=(B,), dtype=torch.bool) # full indicies
 
         else:
             final_result = coarse_result
@@ -237,18 +237,11 @@ class CFVisionTransformer(nn.Module):
             #   infer with Lv2 again <- Lv3/2 < max_pred <= Lv2/1
             #          level=2   thresholds[2]       thresholds[1]
             for level in range(1, len(thresholds)):
-                no_exit[level] = torch.logical_and(max_preds > thresholds[level+1], max_preds <= thresholds[level])
+                no_exit[level] = torch.logical_and(max_preds > thresholds[level], max_preds <= thresholds[level-1])
             # then we handle:
             #   infer with Lv3 again <- max_pred <= Lv3/2
             #          level=len(thresholds) thresholds[-1]
             no_exit[len(thresholds)] = max_preds <= thresholds[-1]
-
-        # reuse (preparation)
-        feature_temp = self.first_stage_output[:,1:,:][no_exit]
-        feature_temp = self.reuse_block(feature_temp)
-        B, new_HW, C = feature_temp.shape
-        feature_temp = feature_temp.transpose(1, 2).reshape(B, C, int(np.sqrt(new_HW)), int(np.sqrt(new_HW)))
-        feature_temp = F.interpolate(feature_temp, to_2tuple(self.img_size_list[level]//self.patch_size), mode='nearest')
 
         # fine stage
         fine_result = {}
@@ -264,7 +257,12 @@ class CFVisionTransformer(nn.Module):
             cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
             x = torch.cat((cls_tokens, x), dim=1)
 
-            # reuse (applying)
+            # reuse
+            feature_temp = self.first_stage_output[:,1:,:][no_exit[level]]
+            feature_temp = self.reuse_block(feature_temp)
+            B, new_HW, C = feature_temp.shape
+            feature_temp = feature_temp.transpose(1, 2).reshape(B, C, int(np.sqrt(new_HW)), int(np.sqrt(new_HW)))
+            feature_temp = F.interpolate(feature_temp, to_2tuple(self.img_size_list[level]//self.patch_size), mode='nearest')
             feature_temp_this = feature_temp.view(B, C, x.size(1) - 1).transpose(1, 2)
             feature_temp_this = torch.cat((torch.zeros(B, 1, self.embed_dim).cuda(), feature_temp_this), dim=1)
 
