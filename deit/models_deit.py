@@ -38,19 +38,10 @@ class Mlp(nn.Module):
         x = self.drop(x)
         return x
 
-class MultiResoPatchEmbed(nn.Module):
-    """ 
-    add patch number(num_patches_list) corresponding to multi input resolution
-    """
-    def __init__(self, img_size_list=[112, 224], patch_size=16, in_chans=3, embed_dim=768):
+class PatchEmbed(nn.Module):
+    def __init__(self, patch_size=16, in_chans=3, embed_dim=768):
         super().__init__()
-        img_size_list = [to_2tuple(k) for k in img_size_list]
-        patch_size = to_2tuple(patch_size)
-        num_patches_list = [(img_size[1] // patch_size[1]) * (img_size[0] // patch_size[0]) for img_size in img_size_list]
-        self.patch_size = patch_size
-        self.num_patches_list = num_patches_list
-
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=to_2tuple(patch_size), stride=to_2tuple(patch_size))
 
     def forward(self, x):
         x = self.proj(x).flatten(2).transpose(1, 2)
@@ -112,7 +103,7 @@ class CFVisionTransformer(nn.Module):
     Vision Transformer with support for patch or hybrid CNN input stage
     
     """
-    def __init__(self, img_size_list=[112, 224], patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
+    def __init__(self, img_size_list=[96, 192, 384], patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
                  num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
                  drop_path_rate=0., hybrid_backbone=None, norm_layer=nn.LayerNorm):
         super().__init__()
@@ -120,16 +111,16 @@ class CFVisionTransformer(nn.Module):
         self.alpha = 0.5
         self.beta = 0.99
         self.target_index = [3,4,5,6,7,8,9,10,11]
-        self.patch_h = img_size_list[1]//patch_size
-        self.patch_w = img_size_list[1]//patch_size
 
         self.img_size_list = img_size_list
         self.num_classes = num_classes
         self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
 
-        self.patch_embed = MultiResoPatchEmbed(
-            img_size_list=img_size_list, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
-        num_patches_list = self.patch_embed.num_patches_list
+        self.patch_embed = PatchEmbed(patch_size, in_chans, embed_dim)
+        self.patch_size = patch_size
+
+        num_patches_list = [(img_size // patch_size) ** 2 for img_size in img_size_list]
+        self.num_patches_list = num_patches_list
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         self.pos_embed_list = [nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim)) for num_patches in num_patches_list]
@@ -188,15 +179,23 @@ class CFVisionTransformer(nn.Module):
         """
         return self.important_index
 
-    def forward(self, xx):
-        results = []
+    def forward(self, xx, train=False, thresholds=[0.8, 0.5]): # thresholds should be descending
+        if train:
+            # let each level run on each sample (thus full no_exit indicies)
+            # and collect all results for learning
+            all_results = []
+        else: # thresholds only used during evaluation; keep final_result only
+            assert len(thresholds) == len(self.img_size_list) - 1
+
         global_attention = 0
+
         # coarse stage
         x = xx[0]
         B = x.shape[0]
         x = self.patch_embed(x)
         cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
         x = torch.cat((cls_tokens, x), dim=1)
+
         x = x + self.pos_embed_list[0]
         x = self.pos_drop(x)
         embedding_x1 = x
@@ -206,110 +205,98 @@ class CFVisionTransformer(nn.Module):
                 global_attention = self.beta*global_attention + (1-self.beta)*atten
         x = self.norm(x)
         self.first_stage_output = x
-        results.append(self.head(x[:, 0]))
 
-        # fine stage 
-        x = xx[1]
-        x = self.patch_embed(x)
-        cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
-        x = torch.cat((cls_tokens, x), dim=1)
+        coarse_result = self.head(x[:, 0])
 
-        # reuse
-        feature_temp = self.first_stage_output[:,1:,:]
-        feature_temp = self.reuse_block(feature_temp)  
+        no_exit = {}
+
+        if train:
+            all_results.append(coarse_result)
+
+            for level in range(1, len(self.img_size_list)):
+                no_exit[level] = torch.ones_like(coarse_result) # full indicies
+
+        else:
+            final_result = coarse_result
+
+            probs_temp = F.softmax(coarse_result, dim=1)
+            max_preds, _ = probs_temp.max(dim=1)
+            # example: 4 levels in img_size_list (Lv0, Lv1, Lv2, Lv3)
+            # (not necessarily the img_size_list actually used!)
+            
+            # then 3 levels of thresholds:
+            #   [0] Lv1/0 - higher than this = exit
+            #   [1] Lv2/1
+            #   [2] Lv3/2 - lowest
+            # (note: the coarse stage above was Lv0)
+
+            # range(1, len(thresholds)) is range (1, 3), or like [1, 2]
+            # so here we're handling:
+            #   infer with Lv1 again <- Lv2/1 < max_pred <= Lv1/0
+            #          level=1   thresholds[1]       thresholds[0]
+            #   infer with Lv2 again <- Lv3/2 < max_pred <= Lv2/1
+            #          level=2   thresholds[2]       thresholds[1]
+            for level in range(1, len(thresholds)):
+                no_exit[level] = torch.logical_and(max_preds > thresholds[level+1], max_preds <= thresholds[level])
+            # then we handle:
+            #   infer with Lv3 again <- max_pred <= Lv3/2
+            #          level=len(thresholds) thresholds[-1]
+            no_exit[len(thresholds)] = max_preds <= thresholds[-1]
+
+        # reuse (preparation)
+        feature_temp = self.first_stage_output[:,1:,:][no_exit]
+        feature_temp = self.reuse_block(feature_temp)
         B, new_HW, C = feature_temp.shape
         feature_temp = feature_temp.transpose(1, 2).reshape(B, C, int(np.sqrt(new_HW)), int(np.sqrt(new_HW)))
-        feature_temp = torch.nn.functional.interpolate(feature_temp, (self.patch_h, self.patch_w), mode='nearest')
-        feature_temp = feature_temp.view(B, C, x.size(1) - 1).transpose(1, 2)
-        feature_temp = torch.cat((torch.zeros(B, 1, self.embed_dim).cuda(), feature_temp), dim=1)
-        
-        x = x+feature_temp      # shortcut
-        embedding_x2 = x + self.pos_embed_list[1]
-        if self.informative_selection:
-            cls_attn = global_attention.mean(dim=1)[:,0,1:] 
-            import_token_num = math.ceil(self.alpha * self.patch_embed.num_patches_list[0])
-            policy_index = torch.argsort(cls_attn, dim=1, descending=True)
-            unimportan_index = policy_index[:, import_token_num:]
-            important_index = policy_index[:, :import_token_num]
-            unimportan_tokens = batch_index_select(embedding_x1, unimportan_index+1)
-            important_index = get_index(important_index,image_size=self.img_size_list[1])
-            self.important_index = important_index
-            cls_index = torch.zeros((B,1)).cuda().long()
-            important_index = torch.cat((cls_index, important_index+1), dim=1)
-            important_tokens = batch_index_select(embedding_x2, important_index)
-            x = torch.cat((important_tokens, unimportan_tokens), dim=1)
-        
-        x = self.pos_drop(x)
-        for blk in self.blocks:
-            x, _ = blk(x)
-        x = self.norm(x)
-        results.append(self.head(x[:, 0]))
-
-        return results
-
-    def forward_early_exit(self, xx, threshold):
-        alpha = 0.99 
-        global_attention = 0
-        target_index = [3,4,5,6,7,8,9,10,11]
-        # coarse stage
-        x = xx[0]
-        B = x.shape[0]
-        x = self.patch_embed(x)
-        cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
-        x = torch.cat((cls_tokens, x), dim=1)
-        x = x + self.pos_embed_list[0]
-        x = self.pos_drop(x)
-        embedding_x1 = x
-        for index,blk in enumerate(self.blocks):
-            x, atten = blk(x)
-            if index in target_index:
-                global_attention = alpha*global_attention + (1-alpha)*atten
-        x = self.norm(x)
-        self.first_stage_output = x
-        coarse_result = self.head(x[:, 0])
-        logits_temp = F.softmax(coarse_result, 1)
-        max_preds, _ = logits_temp.max(dim=1, keepdim=False)
-        no_exit = max_preds < threshold
+        feature_temp = F.interpolate(feature_temp, to_2tuple(self.img_size_list[level]//self.patch_size), mode='nearest')
 
         # fine stage
-        x = xx[1][no_exit]
-        B = x.shape[0]
-        x = self.patch_embed(x)
-        cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
-        x = torch.cat((cls_tokens, x), dim=1)
+        fine_result = {}
+        if self.informative_selection:
+            self.important_index = {}
 
-        # reuse
-        feature_temp = self.first_stage_output[:,1:,:][no_exit]
-        feature_temp = self.reuse_block(feature_temp)  
-        B, new_HW, C = feature_temp.shape
-        feature_temp = feature_temp.transpose(1, 2).reshape(B, C, int(np.sqrt(new_HW)), int(np.sqrt(new_HW)))
-        feature_temp = torch.nn.functional.interpolate(feature_temp, (14, 14), mode='nearest')
-        feature_temp = feature_temp.view(B, C, x.size(1) - 1).transpose(1, 2)
-        feature_temp = torch.cat((torch.zeros(B, 1, self.embed_dim).cuda(), feature_temp), dim=1)
-        
-        x = x+feature_temp      
-        embedding_x2 = x + self.pos_embed_list[1]
-        
-        cls_attn = global_attention[no_exit].mean(dim=1)[:,0,1:] # 不计算cls_token本身
-        import_token_num = math.ceil(self.alpha * self.patch_embed.num_patches_list[0])
-        policy_index = torch.argsort(cls_attn, dim=1, descending=True)
-        unimportan_index = policy_index[:, import_token_num:]
-        important_index = policy_index[:, :import_token_num]
-        unimportan_tokens = batch_index_select(embedding_x1[no_exit], unimportan_index+1)
-        important_index = get_index(important_index)
-        cls_index = torch.zeros((B,1)).cuda().long()
-        important_index = torch.cat((cls_index, important_index+1), dim=1)
-        important_tokens = batch_index_select(embedding_x2, important_index)
-        x = torch.cat((important_tokens, unimportan_tokens), dim=1)
-                
-        x = self.pos_drop(x)
-        for blk in self.blocks:
-            x, _ = blk(x)
-        x = self.norm(x)
-        fine_result = self.head(x[:, 0])
-        coarse_result[no_exit] = fine_result
-        
-        return coarse_result
+        # recall the example above, then range(1, len(self.img_size_list))
+        # is range (1, 4), or like [1, 2, 3]
+        for level in range(1, len(self.img_size_list)):
+            x = xx[level][no_exit[level]]
+            B = x.shape[0]
+            x = self.patch_embed(x)
+            cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
+            x = torch.cat((cls_tokens, x), dim=1)
+
+            # reuse (applying)
+            feature_temp_this = feature_temp.view(B, C, x.size(1) - 1).transpose(1, 2)
+            feature_temp_this = torch.cat((torch.zeros(B, 1, self.embed_dim).cuda(), feature_temp_this), dim=1)
+
+            x = x+feature_temp_this      # shortcut
+            embedding_x2 = x + self.pos_embed_list[level]
+
+            if self.informative_selection:
+                cls_attn = global_attention[no_exit].mean(dim=1)[:,0,1:] # not calculating cls_token itself
+                import_token_num = math.ceil(self.alpha * self.num_patches_list[0])
+                policy_index = torch.argsort(cls_attn, dim=1, descending=True)
+                unimportant_index = policy_index[:, import_token_num:]
+                important_index = policy_index[:, :import_token_num]
+                unimportant_tokens = batch_index_select(embedding_x1[no_exit], unimportant_index+1)
+                important_index = get_index(important_index,image_size=self.img_size_list[level])
+                self.important_index[level] = important_index
+                cls_index = torch.zeros((B,1)).cuda().long()
+                important_index = torch.cat((cls_index, important_index+1), dim=1)
+                important_tokens = batch_index_select(embedding_x2, important_index)
+                x = torch.cat((important_tokens, unimportant_tokens), dim=1)
+
+            x = self.pos_drop(x)
+            for blk in self.blocks:
+                x, _ = blk(x)
+            x = self.norm(x)
+            fine_result[level] = self.head(x[:, 0])
+
+            if train:
+                all_results.append(fine_result[level])
+            else:
+                final_result[no_exit[level]] = fine_result[level]
+
+        return all_results if train else final_result
 
 
 @register_model
