@@ -410,10 +410,10 @@ def main(args):
                 }, checkpoint_path)
 
         test_stats = evaluate(data_loader_val, model, device, args.input_size_list)
-        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats['224_acc1']:.1f}%")
-        if max_accuracy < test_stats['224_acc1']:
+        print(f"Accuracy of the network on the {len(dataset_val)} test images: {test_stats[f'{args.input_size}_acc1']:.1f}%")
+        if max_accuracy < test_stats[f'{args.input_size}_acc1']:
             shutil.copyfile(checkpoint_path, f'{args.output_dir}/model_best.pth')
-        max_accuracy = max(max_accuracy, test_stats['224_acc1'])
+        max_accuracy = max(max_accuracy, test_stats[f'{args.input_size}_acc1'])
         print(f'Max accuracy: {max_accuracy:.2f}%')
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
