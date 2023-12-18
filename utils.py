@@ -287,12 +287,12 @@ def batch_index_select(x, idx):
     else:
         raise NotImplementedError
 
-def get_index(idx, image_size=224, patch_size1=32,patch_size2=16):
+def get_index(idx, image_size_small=96, image_size_large=192, patch_size=16):
     '''
     get index of fine stage corresponding to coarse stage 
     '''
-    H1 = int(image_size/patch_size1)
-    H2 = int(image_size/patch_size2)
+    H1 = int(image_size_small/patch_size)
+    H2 = int(image_size_large/patch_size)
     y = idx%H1
     idx1 = 4*idx - 2*y
     idx2 = idx1 + 1

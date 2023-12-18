@@ -276,7 +276,7 @@ class CFVisionTransformer(nn.Module):
                 unimportant_index = policy_index[:, import_token_num:]
                 important_index = policy_index[:, :import_token_num]
                 unimportant_tokens = batch_index_select(embedding_x1[no_exit], unimportant_index+1)
-                important_index = get_index(important_index,image_size=self.img_size_list[level])
+                important_index = get_index(important_index,image_size_small=self.img_size_list[0],image_size_large=self.img_size_list[level])
                 self.important_index[level] = important_index
                 cls_index = torch.zeros((B,1)).cuda().long()
                 important_index = torch.cat((cls_index, important_index+1), dim=1)
