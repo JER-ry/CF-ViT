@@ -44,12 +44,15 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
         samples_list.append(samples)
         with torch.cuda.amp.autocast():
             results = model(samples_list)
-            loss_ce = criterion(samples, results[1], targets) 
-            max_output_detach_softmax = F.softmax(results[1].detach(), dim=1)
-            kl_layer = torch.nn.KLDivLoss(reduction='batchmean')
-            log_softmax_result0 = F.log_softmax(results[0], dim=1)
-            loss_kl = kl_layer(log_softmax_result0, max_output_detach_softmax)
-            loss = loss_ce + loss_kl
+
+            loss = criterion(samples, results[-1], targets) # CE
+
+            finest_output_detach_softmax = F.softmax(results[-1].detach(), dim=1)
+            for i in range(0, len(results)-1):
+                loss += torch.nn.KLDivLoss(reduction='batchmean')(
+                    F.log_softmax(results[i], dim=1), finest_output_detach_softmax
+                ) # KL
+
         optimizer.zero_grad()
 
         loss_value = loss.item()
