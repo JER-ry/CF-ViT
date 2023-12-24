@@ -270,12 +270,12 @@ class CFVisionTransformer(nn.Module):
             embedding_x2 = x + self.pos_embed_list[level]
 
             if self.informative_selection:
-                cls_attn = global_attention[no_exit].mean(dim=1)[:,0,1:] # not calculating cls_token itself
+                cls_attn = global_attention[no_exit[level]].mean(dim=1)[:,0,1:] # not calculating cls_token itself
                 import_token_num = math.ceil(self.alpha * self.num_patches_list[0])
                 policy_index = torch.argsort(cls_attn, dim=1, descending=True)
                 unimportant_index = policy_index[:, import_token_num:]
                 important_index = policy_index[:, :import_token_num]
-                unimportant_tokens = batch_index_select(embedding_x1[no_exit], unimportant_index+1)
+                unimportant_tokens = batch_index_select(embedding_x1[no_exit[level]], unimportant_index+1)
                 important_index = get_index(important_index,image_size_small=self.img_size_list[0],image_size_large=self.img_size_list[level])
                 self.important_index[level] = important_index
                 cls_index = torch.zeros((B,1)).cuda().long()
