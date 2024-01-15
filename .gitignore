@@ -1,6 +1,6 @@
 /checkpoints/
 /log/
-/output/
+/output/*.pth
 command.sh
 temp.py
 
