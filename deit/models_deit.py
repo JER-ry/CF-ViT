@@ -1,23 +1,17 @@
 # Copyright (c) 2015-present, Facebook, Inc.
 # All rights reserved.
 import math
-import logging
 from functools import partial
-from collections import OrderedDict
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 from timm.models.registry import register_model
-from timm.models.layers import trunc_normal_
-
 
 from utils import batch_index_select,get_index
 import numpy as np
-import math
 
 
 class Mlp(nn.Module):
@@ -107,7 +101,7 @@ class CFVisionTransformer(nn.Module):
                  num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
                  drop_path_rate=0., hybrid_backbone=None, norm_layer=nn.LayerNorm):
         super().__init__()
-        self.informative_selection = False
+        self.informative_selection = True # False
         self.alpha = 0.5
         self.beta = 0.99
         self.target_index = [3,4,5,6,7,8,9,10,11]
@@ -173,11 +167,11 @@ class CFVisionTransformer(nn.Module):
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
 
-    def get_vis_data(self):
-        """
-            For Visualization
-        """
-        return self.important_index
+    # def get_vis_data(self):
+    #     """
+    #         For Visualization
+    #     """
+    #     return self.important_index
 
     def forward(self, xx, train=True, thresholds=[0.8, 0.5]): # thresholds should be descending
         if train:
@@ -245,8 +239,8 @@ class CFVisionTransformer(nn.Module):
 
         # fine stage
         fine_result = {}
-        if self.informative_selection:
-            self.important_index = {}
+        # if self.informative_selection:
+        #     self.important_index = {}
 
         # recall the example above, then range(1, len(self.img_size_list))
         # is range (1, 4), or like [1, 2, 3]
@@ -270,14 +264,16 @@ class CFVisionTransformer(nn.Module):
             embedding_x2 = x + self.pos_embed_list[level]
 
             if self.informative_selection:
-                cls_attn = global_attention[no_exit[level]].mean(dim=1)[:,0,1:] # not calculating cls_token itself
+                # `global_attention` [B, num_heads, N, N], N=number of tokens (coarse stage); same shape as each `atten` (sequence length)
+                cls_attn = global_attention.mean(dim=1)[no_exit[level],0,1:] # `mean` on num_heads; select cls_token<-(all other tokens)
+                # `cls_attn` [B', N-1], B'=number of images in `no_exit[level]`
                 import_token_num = math.ceil(self.alpha * self.num_patches_list[0])
                 policy_index = torch.argsort(cls_attn, dim=1, descending=True)
                 unimportant_index = policy_index[:, import_token_num:]
                 important_index = policy_index[:, :import_token_num]
                 unimportant_tokens = batch_index_select(embedding_x1[no_exit[level]], unimportant_index+1)
-                important_index = get_index(important_index,image_size_small=self.img_size_list[0],image_size_large=self.img_size_list[level])
-                self.important_index[level] = important_index
+                important_index = get_index(important_index,image_size_small=self.img_size_list[0],image_size_large=self.img_size_list[level], patch_size=self.patch_size)
+                # self.important_index[level] = important_index
                 cls_index = torch.zeros((B,1)).cuda().long()
                 important_index = torch.cat((cls_index, important_index+1), dim=1)
                 important_tokens = batch_index_select(embedding_x2, important_index)

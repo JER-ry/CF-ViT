@@ -287,16 +287,30 @@ def batch_index_select(x, idx):
     else:
         raise NotImplementedError
 
-def get_index(idx, image_size_small=96, image_size_large=192, patch_size=16):
+def get_index(idx, image_size_small, image_size_large, patch_size):
     '''
-    get index of fine stage corresponding to coarse stage 
+    get index of fine stage corresponding to coarse stage for any resolution increase
     '''
-    H1 = int(image_size_small/patch_size)
-    H2 = int(image_size_large/patch_size)
-    y = idx%H1
-    idx1 = 4*idx - 2*y
-    idx2 = idx1 + 1
-    idx3 = idx1 + H2 
-    idx4 = idx3 + 1 
-    idx_finnal = torch.cat((idx1,idx2,idx3,idx4),dim=1)   # transformer对位置不敏感，位置随意
-    return idx_finnal
+    B, N = idx.shape  # Batch size and number of coarse indices
+    scale_factor = image_size_large // image_size_small  # Calculate the scaling factor
+    H1 = image_size_small // patch_size  # Coarse grid height
+    H2 = image_size_large // patch_size  # Fine grid height
+
+    # Calculate the row and column in the coarse grid for each index
+    y_coarse = idx // H1
+    x_coarse = idx % H1
+    
+    # Calculate the top-left corner index in the fine grid
+    start_idx = (y_coarse * scale_factor * H2 + x_coarse * scale_factor).unsqueeze(2)
+
+    # Calculate fine grid offsets for a single coarse index
+    offsets = torch.arange(scale_factor**2, device=idx.device).view(scale_factor, scale_factor)
+    offsets = (offsets // scale_factor * H2 + offsets % scale_factor).flatten()
+
+    # Broadcast to add the starting fine index to all offsets for each coarse index
+    idx_fine = start_idx + offsets
+
+    # Reshape to get a flat list of fine indices for each coarse index
+    idx_fine = idx_fine.view(B, -1)
+
+    return idx_fine
