@@ -30,8 +30,8 @@ import pdb
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DeiT training and evaluation script', add_help=False)
-    parser.add_argument('--batch-size', default=50, type=int)
-    parser.add_argument('--epochs', default=300, type=int)
+    parser.add_argument('--batch-size', default=108, type=int)
+    parser.add_argument('--epochs', default=200, type=int)
 
     # Model parameters
     parser.add_argument('--model', default='cf_deit_small', type=str, metavar='MODEL',
@@ -67,7 +67,7 @@ def get_args_parser():
     # Learning rate schedule parameters
     parser.add_argument('--sched', default='cosine', type=str, metavar='SCHEDULER',
                         help='LR scheduler (default: "cosine"')
-    parser.add_argument('--lr', type=float, default=2e-4, metavar='LR',
+    parser.add_argument('--lr', type=float, default=5e-5, metavar='LR',
                         help='learning rate (default: 5e-4)')
     parser.add_argument('--lr-noise', type=float, nargs='+', default=None, metavar='pct, pct',
                         help='learning rate noise on/off epoch percentages')
@@ -77,16 +77,14 @@ def get_args_parser():
                         help='learning rate noise std-dev (default: 1.0)')
     parser.add_argument('--warmup-lr', type=float, default=1e-6, metavar='LR',
                         help='warmup learning rate (default: 1e-6)')
-    parser.add_argument('--min-lr', type=float, default=2e-4, metavar='LR',
+    parser.add_argument('--min-lr', type=float, default=1e-5, metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
 
     parser.add_argument('--decay-epochs', type=float, default=30, metavar='N',
                         help='epoch interval to decay LR')
-    # parser.add_argument('--warmup-epochs', type=int, default=5, metavar='N',
-    parser.add_argument('--warmup-epochs', type=int, default=0, metavar='N',
+    parser.add_argument('--warmup-epochs', type=int, default=5, metavar='N',
                         help='epochs to warmup LR, if scheduler supports')
-    # parser.add_argument('--cooldown-epochs', type=int, default=10, metavar='N',
-    parser.add_argument('--cooldown-epochs', type=int, default=300, metavar='N',
+    parser.add_argument('--cooldown-epochs', type=int, default=10, metavar='N',
                         help='epochs to cooldown LR at min_lr, after cyclic schedule ends')
     parser.add_argument('--patience-epochs', type=int, default=10, metavar='N',
                         help='patience epochs for Plateau LR scheduler (default: 10')

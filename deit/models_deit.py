@@ -97,11 +97,11 @@ class CFVisionTransformer(nn.Module):
     Vision Transformer with support for patch or hybrid CNN input stage
     
     """
-    def __init__(self, img_size_list=[96, 192, 384], patch_size=16, in_chans=3, num_classes=1000, embed_dim=768, depth=12,
-                 num_heads=12, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
-                 drop_path_rate=0., hybrid_backbone=None, norm_layer=nn.LayerNorm):
+    def __init__(self, img_size_list=[96, 192, 384], patch_size=16, in_chans=3, num_classes=1000, embed_dim=384, depth=12,
+                 num_heads=12, mlp_ratio=4., qkv_bias=True, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
+                 drop_path_rate=0., norm_layer=partial(nn.LayerNorm, eps=1e-6)):
         super().__init__()
-        self.informative_selection = True # False
+        self.informative_selection = False
         self.alpha = 0.5
         self.beta = 0.99
         self.target_index = [3,4,5,6,7,8,9,10,11]
@@ -138,13 +138,17 @@ class CFVisionTransformer(nn.Module):
 
         self.reuse_block = nn.Sequential(
                 norm_layer(embed_dim),
-                Mlp(in_features=embed_dim, hidden_features=mlp_ratio*embed_dim,out_features=embed_dim,act_layer=nn.GELU,drop=drop_rate)
+                Mlp(in_features=embed_dim, hidden_features=int(mlp_ratio*embed_dim),out_features=embed_dim,act_layer=nn.GELU,drop=drop_rate)
             ) 
 
         for pos_embed in self.pos_embed_list:
             trunc_normal_(pos_embed, std=.02)
         trunc_normal_(self.cls_token, std=.02)
         self.apply(self._init_weights)
+
+        self.use_early_exit = False  # should be disabled during training and enabled during evalutation
+        self.thresholds = [0.9, 0.8]  # thresholds should be descending
+        self.image_count_per_level = [0] * len(img_size_list)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Linear):
@@ -173,13 +177,14 @@ class CFVisionTransformer(nn.Module):
     #     """
     #     return self.important_index
 
-    def forward(self, xx, train=True, thresholds=[0.8, 0.5]): # thresholds should be descending
-        if train:
+    def forward(self, xx):
+        if self.use_early_exit:
+            # thresholds only used during evaluation; keep final_result only
+            assert len(self.thresholds) == len(self.img_size_list) - 1
+        else:
             # let each level run on each sample (thus full no_exit indicies)
             # and collect all results for learning
             all_results = []
-        else: # thresholds only used during evaluation; keep final_result only
-            assert len(thresholds) == len(self.img_size_list) - 1
 
         global_attention = 0
 
@@ -204,13 +209,7 @@ class CFVisionTransformer(nn.Module):
 
         no_exit = {}
 
-        if train:
-            all_results.append(coarse_result)
-
-            for level in range(1, len(self.img_size_list)):
-                no_exit[level] = torch.ones(size=(B,), dtype=torch.bool) # full indicies
-
-        else:
+        if self.use_early_exit:
             final_result = coarse_result
 
             probs_temp = F.softmax(coarse_result, dim=1)
@@ -224,18 +223,26 @@ class CFVisionTransformer(nn.Module):
             #   [2] Lv3/2 - lowest
             # (note: the coarse stage above was Lv0)
 
-            # range(1, len(thresholds)) is range (1, 3), or like [1, 2]
+            # range(1, len(self.thresholds)) is range (1, 3), or like [1, 2]
             # so here we're handling:
             #   infer with Lv1 again <- Lv2/1 < max_pred <= Lv1/0
-            #          level=1   thresholds[1]       thresholds[0]
+            #          level=1          self.thresholds[1]  self.thresholds[0]
             #   infer with Lv2 again <- Lv3/2 < max_pred <= Lv2/1
-            #          level=2   thresholds[2]       thresholds[1]
-            for level in range(1, len(thresholds)):
-                no_exit[level] = torch.logical_and(max_preds > thresholds[level], max_preds <= thresholds[level-1])
+            #          level=2          self.thresholds[2]  self.thresholds[1]
+            self.image_count_per_level[0] += (max_preds > self.thresholds[0]).sum()
+            for level in range(1, len(self.thresholds)):
+                no_exit[level] = torch.logical_and(max_preds > self.thresholds[level], max_preds <= self.thresholds[level-1])
+                self.image_count_per_level[level] += no_exit[level].sum()
             # then we handle:
             #   infer with Lv3 again <- max_pred <= Lv3/2
-            #          level=len(thresholds) thresholds[-1]
-            no_exit[len(thresholds)] = max_preds <= thresholds[-1]
+            #          level=len(self.thresholds)   self.thresholds[-1]
+            no_exit[len(self.thresholds)] = max_preds <= self.thresholds[-1]
+            self.image_count_per_level[len(self.thresholds)] += no_exit[len(self.thresholds)].sum()
+        else:
+            all_results.append(coarse_result)
+
+            for level in range(1, len(self.img_size_list)):
+                no_exit[level] = torch.ones(size=(B,), dtype=torch.bool) # full indicies
 
         # fine stage
         fine_result = {}
@@ -245,6 +252,8 @@ class CFVisionTransformer(nn.Module):
         # recall the example above, then range(1, len(self.img_size_list))
         # is range (1, 4), or like [1, 2, 3]
         for level in range(1, len(self.img_size_list)):
+            if no_exit[level].sum() == 0:
+                continue  # this only happens if self.use_early_exit is True, so don't worry about all_results
             x = xx[level][no_exit[level]]
             B = x.shape[0]
             x = self.patch_embed(x)
@@ -258,7 +267,7 @@ class CFVisionTransformer(nn.Module):
             feature_temp = feature_temp.transpose(1, 2).reshape(B, C, int(np.sqrt(new_HW)), int(np.sqrt(new_HW)))
             feature_temp = F.interpolate(feature_temp, to_2tuple(self.img_size_list[level]//self.patch_size), mode='nearest')
             feature_temp_this = feature_temp.view(B, C, x.size(1) - 1).transpose(1, 2)
-            feature_temp_this = torch.cat((torch.zeros(B, 1, self.embed_dim).cuda(), feature_temp_this), dim=1)
+            feature_temp_this = torch.cat((torch.zeros(B, 1, self.embed_dim, device=feature_temp_this.device), feature_temp_this), dim=1)
 
             x = x+feature_temp_this      # shortcut
             embedding_x2 = x + self.pos_embed_list[level]
@@ -274,7 +283,7 @@ class CFVisionTransformer(nn.Module):
                 unimportant_tokens = batch_index_select(embedding_x1[no_exit[level]], unimportant_index+1)
                 important_index = get_index(important_index,image_size_small=self.img_size_list[0],image_size_large=self.img_size_list[level], patch_size=self.patch_size)
                 # self.important_index[level] = important_index
-                cls_index = torch.zeros((B,1)).cuda().long()
+                cls_index = torch.zeros((B,1), device=important_index.device).long()
                 important_index = torch.cat((cls_index, important_index+1), dim=1)
                 important_tokens = batch_index_select(embedding_x2, important_index)
                 x = torch.cat((important_tokens, unimportant_tokens), dim=1)
@@ -285,12 +294,12 @@ class CFVisionTransformer(nn.Module):
             x = self.norm(x)
             fine_result[level] = self.head(x[:, 0])
 
-            if train:
-                all_results.append(fine_result[level])
-            else:
+            if self.use_early_exit:
                 final_result[no_exit[level]] = fine_result[level]
+            else:
+                all_results.append(fine_result[level])
 
-        return all_results if train else final_result
+        return final_result if self.use_early_exit else all_results
 
 
 @register_model
