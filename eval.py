@@ -16,14 +16,14 @@ class dotdict(dict):
 
 args = dotdict(
     {
-        "batch_size": 400,
+        "batch_size": 500,
         "coarse_stage_size": 6,
         "drop": 0.0,
         "drop_path": 0.1,
-        "data_path": "nano-inet",
+        "data_path": "ImageNet",
         "data_set": "IMNET",
         "output_dir": "CF-ViT/output",
-        "device": "cpu",  # "cuda",
+        "device": "cuda",  # "cuda",
         "seed": 0,
         "start_epoch": 0,
         "num_workers": 10,
@@ -48,7 +48,7 @@ np.random.seed(seed)
 cudnn.benchmark = True
 
 dataset_val, args.nb_classes = build_dataset(is_train=False, args=args)
-sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+sampler_val = torch.utils.data.RandomSampler(dataset_val)
 data_loader_val = torch.utils.data.DataLoader(
     dataset_val,
     sampler=sampler_val,
@@ -65,10 +65,11 @@ model = CFVisionTransformer(
     drop_path_rate=args.drop_path,
 )
 model.load_state_dict(
-    torch.load("CF-ViT/output/checkpoint.pth", map_location=device)["model"]
+    torch.load("CF-ViT/output/model_best.pth", map_location=device)["model"]
 )
 model.informative_selection = True
 model.use_early_exit = True
+model.thresholds = [0.8, 0.5]
 model.to(device)
 model.eval()
 
@@ -76,7 +77,7 @@ model.eval()
 with torch.no_grad():
     metric_logger = utils.MetricLogger(delimiter="  ")
 
-    for images, target in metric_logger.log_every(data_loader_val, 10):
+    for images, target in metric_logger.log_every(data_loader_val, 1):
         target = target.to(device, non_blocking=True)
         images = images.to(device, non_blocking=True)
         images_list = []
