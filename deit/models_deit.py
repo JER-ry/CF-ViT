@@ -101,7 +101,7 @@ class CFVisionTransformer(nn.Module):
                  num_heads=12, mlp_ratio=4., qkv_bias=True, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
                  drop_path_rate=0., norm_layer=partial(nn.LayerNorm, eps=1e-6)):
         super().__init__()
-        self.informative_selection = False
+        self.informative_selection = True
         self.alpha = 0.5
         self.beta = 0.99
         self.target_index = [3,4,5,6,7,8,9,10,11]
@@ -246,14 +246,14 @@ class CFVisionTransformer(nn.Module):
 
         # fine stage
         fine_result = {}
-        # if self.informative_selection:
-        #     self.important_index = {}
+        if self.informative_selection:
+            self.important_index = {}
 
         # recall the example above, then range(1, len(self.img_size_list))
         # is range (1, 4), or like [1, 2, 3]
         for level in range(1, len(self.img_size_list)):
-            if no_exit[level].sum() == 0:
-                continue  # this only happens if self.use_early_exit is True, so don't worry about all_results
+            if self.use_early_exit and no_exit[level].sum() == 0:
+                    continue  # this only happens if self.use_early_exit is True, so don't worry about all_results
             x = xx[level][no_exit[level]]
             B = x.shape[0]
             x = self.patch_embed(x)
@@ -280,9 +280,9 @@ class CFVisionTransformer(nn.Module):
                 policy_index = torch.argsort(cls_attn, dim=1, descending=True)
                 unimportant_index = policy_index[:, import_token_num:]
                 important_index = policy_index[:, :import_token_num]
+                self.important_index[level] = important_index
                 unimportant_tokens = batch_index_select(embedding_x1[no_exit[level]], unimportant_index+1)
                 important_index = get_index(important_index,image_size_small=self.img_size_list[0],image_size_large=self.img_size_list[level], patch_size=self.patch_size)
-                # self.important_index[level] = important_index
                 cls_index = torch.zeros((B,1), device=important_index.device).long()
                 important_index = torch.cat((cls_index, important_index+1), dim=1)
                 important_tokens = batch_index_select(embedding_x2, important_index)

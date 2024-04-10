@@ -30,8 +30,8 @@ import pdb
 
 def get_args_parser():
     parser = argparse.ArgumentParser('DeiT training and evaluation script', add_help=False)
-    parser.add_argument('--batch-size', default=108, type=int)
-    parser.add_argument('--epochs', default=200, type=int)
+    parser.add_argument('--batch-size', default=112, type=int)
+    parser.add_argument('--epochs', default=72, type=int)
 
     # Model parameters
     parser.add_argument('--model', default='cf_deit_small', type=str, metavar='MODEL',
@@ -67,7 +67,7 @@ def get_args_parser():
     # Learning rate schedule parameters
     parser.add_argument('--sched', default='cosine', type=str, metavar='SCHEDULER',
                         help='LR scheduler (default: "cosine"')
-    parser.add_argument('--lr', type=float, default=5e-5, metavar='LR',
+    parser.add_argument('--lr', type=float, default=4e-6, metavar='LR',
                         help='learning rate (default: 5e-4)')
     parser.add_argument('--lr-noise', type=float, nargs='+', default=None, metavar='pct, pct',
                         help='learning rate noise on/off epoch percentages')
@@ -75,16 +75,16 @@ def get_args_parser():
                         help='learning rate noise limit percent (default: 0.67)')
     parser.add_argument('--lr-noise-std', type=float, default=1.0, metavar='STDDEV',
                         help='learning rate noise std-dev (default: 1.0)')
-    parser.add_argument('--warmup-lr', type=float, default=1e-6, metavar='LR',
+    parser.add_argument('--warmup-lr', type=float, default=1e-8, metavar='LR',
                         help='warmup learning rate (default: 1e-6)')
-    parser.add_argument('--min-lr', type=float, default=1e-5, metavar='LR',
+    parser.add_argument('--min-lr', type=float, default=1e-8, metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0 (1e-5)')
 
     parser.add_argument('--decay-epochs', type=float, default=30, metavar='N',
                         help='epoch interval to decay LR')
-    parser.add_argument('--warmup-epochs', type=int, default=5, metavar='N',
+    parser.add_argument('--warmup-epochs', type=int, default=1, metavar='N',
                         help='epochs to warmup LR, if scheduler supports')
-    parser.add_argument('--cooldown-epochs', type=int, default=10, metavar='N',
+    parser.add_argument('--cooldown-epochs', type=int, default=0, metavar='N',
                         help='epochs to cooldown LR at min_lr, after cyclic schedule ends')
     parser.add_argument('--patience-epochs', type=int, default=10, metavar='N',
                         help='patience epochs for Plateau LR scheduler (default: 10')
@@ -256,7 +256,7 @@ def main(args):
         drop_block_rate=None,
     )
 
-    model.load_state_dict(torch.load("/home/jianruiwu2/capstone/CF-ViT/log/run4/checkpoint.pth")["model"])
+    model.load_state_dict(torch.load("CF-ViT/log/run7/model_best.pth")["model"])
 
     if args.finetune:
         if args.finetune.startswith('https'):
@@ -307,7 +307,7 @@ def main(args):
 
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=False)
         model_without_ddp = model.module
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
@@ -374,7 +374,8 @@ def main(args):
                 loss_scaler.load_state_dict(checkpoint['scaler'])
 
     if args.eval:
-        model.apply(lambda m: setattr(m,'informative_selection', True))
+        #model.informative_selection = True
+        # TODO: this control is not effective.
         test_stats = evaluate(data_loader_val, model, device, args.input_size_list)
         return
 
@@ -387,8 +388,9 @@ def main(args):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
         # if epoch > args.epochs * 0.5:
-        if epoch > 0:
-            model.apply(lambda m: setattr(m,'informative_selection', True))
+        # model.informative_selection = True
+        # model.use_early_exit = False
+        # TODO: these controls are not effective.
 
         train_stats = train_one_epoch(
             model, criterion, data_loader_train,

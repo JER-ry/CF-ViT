@@ -18,13 +18,13 @@ class dotdict(dict):
 
 args = dotdict(
     {
-        "batch_size": 500,
+        "batch_size": 250,
         "coarse_stage_size": 6,
         "drop": 0.0,
         "drop_path": 0.1,
         "data_path": "ImageNet",
         "data_set": "IMNET",
-        "device": "cuda",
+        "device": "cuda:1",
         "seed": 0,
         "start_epoch": 0,
         "num_workers": 10,
@@ -71,11 +71,10 @@ model = create_model(
 model.load_state_dict(
     torch.load("CF-ViT/log/run8/model_best.pth", map_location=device)["model"]
 )
-model.informative_selection = True
+model.informative_selection = False
 model.use_early_exit = True
 model.to(device)
 model.eval()
-
 
 with torch.no_grad():
     result_dict = {}
@@ -85,8 +84,8 @@ with torch.no_grad():
         for j in [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
         if i >= j
     ]
-    # thresholds_list = [(1.0, 1.0)]
-
+    # thresholds_list = [(0.6, 0.5)]
+    
     for i, j in thresholds_list:
         model.thresholds = [i, j]
         model.image_count_per_level = [0] * len(args.input_size_list)

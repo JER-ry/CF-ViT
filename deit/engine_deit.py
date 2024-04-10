@@ -26,7 +26,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: DistillationLoss,
                     set_training_mode=True, input_size_list:list=[112,160,224]):
     model.train(set_training_mode)
     metric_logger = utils.MetricLogger(delimiter="  ")
-    metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.8f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
 
@@ -91,7 +91,7 @@ def evaluate(data_loader, model, device,input_size_list):
             resized_img = F.interpolate(images, (input_size_list[i], input_size_list[i]), mode='bilinear', align_corners=True)
             resized_img = torch.squeeze(resized_img)
             images_list.append(resized_img)  
-        images_list.append(images)  
+        images_list.append(images)
         with torch.cuda.amp.autocast():
             results = model(images_list)
         batch_size = images.shape[0]
